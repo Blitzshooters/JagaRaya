@@ -35,6 +35,23 @@ class SimulateCaptureRequest(BaseModel):
     vehicle_color: Optional[str] = "Hitam"
     visual_description: Optional[str] = "SUV Hitam gagah dengan kaca film hitam gelap."
 
+class CreateCameraRequest(BaseModel):
+    name: str
+    lat: float
+    lng: float
+    zone: Optional[str] = "Wilayah Kustom"
+    city: Optional[str] = "Kustom"
+
+@app.get("/")
+def root():
+    return {
+        "name": "JagaRaya AI Backend Server",
+        "status": "ONLINE",
+        "frontend_url": "http://localhost:5173",
+        "api_docs": "http://127.0.0.1:8000/docs",
+        "health_check": "http://127.0.0.1:8000/api/health"
+    }
+
 @app.get("/api/health")
 def health_check():
     return {
@@ -50,9 +67,47 @@ def health_check():
 def get_cameras():
     return db.get_cameras()
 
+@app.post("/api/cameras")
+def create_camera(req: CreateCameraRequest):
+    new_cam = db.add_camera(req.dict())
+    return {"status": "SUCCESS", "camera": new_cam}
+
+@app.delete("/api/cameras/{cam_id}")
+def delete_camera(cam_id: str):
+    db.delete_camera(cam_id)
+    return {"status": "SUCCESS", "deleted_id": cam_id}
+
 @app.get("/api/captures")
 def get_captures():
     return db.get_all_captures()
+
+
+import numpy as np
+
+def sanitize_json_obj(obj, visited=None):
+    if visited is None:
+        visited = set()
+    obj_id = id(obj)
+    if obj_id in visited:
+        return None
+    if isinstance(obj, dict):
+        visited.add(obj_id)
+        return {str(k): sanitize_json_obj(v, visited.copy()) for k, v in obj.items()}
+    elif isinstance(obj, (list, tuple)):
+        visited.add(obj_id)
+        return [sanitize_json_obj(item, visited.copy()) for item in obj]
+    elif isinstance(obj, (np.integer, np.int64, np.int32)):
+        return int(obj)
+    elif isinstance(obj, (np.floating, np.float32, np.float64)):
+        return float(obj)
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    elif isinstance(obj, np.str_):
+        return str(obj)
+    elif isinstance(obj, (int, float, str, bool)) or obj is None:
+        return obj
+    else:
+        return str(obj)
 
 @app.post("/api/detect")
 async def detect_vehicle(
@@ -83,20 +138,32 @@ async def detect_vehicle(
                     "lat": cam_info["lat"],
                     "lng": cam_info["lng"],
                     "zone": cam_info["zone"],
-                    "plate_number": vehicle["plate_number"],
-                    "vehicle_type": vehicle["vehicle_type"],
-                    "vehicle_color": vehicle["vehicle_color"],
-                    "visual_description": vehicle["visual_description"],
-                    "confidence": vehicle["plate_confidence"],
+                    "plate_number": str(vehicle["plate_number"]),
+                    "vehicle_type": str(vehicle["vehicle_type"]),
+                    "vehicle_color": str(vehicle["vehicle_color"]),
+                    "visual_description": str(vehicle["visual_description"]),
+                    "confidence": float(vehicle["plate_confidence"]),
                     "timestamp": ts
                 })
                 saved_ids.append(cap["id"])
             
             if primary:
-                primary["saved_capture_id"] = saved_ids[0] if saved_ids else None
-                primary["video_meta"] = video_result["video_summary"]
-                primary["all_unique_vehicles"] = video_result["unique_vehicles"]
-                return primary
+                clean_vehicles = []
+                for v in video_result["unique_vehicles"]:
+                    v_clean = {k: val for k, val in v.items() if k not in ("all_unique_vehicles", "video_meta")}
+                    clean_vehicles.append(v_clean)
+
+                clean_all_frames = []
+                for f_det in video_result.get("all_frame_detections", []):
+                    f_clean = {k: val for k, val in f_det.items() if k not in ("all_unique_vehicles", "video_meta")}
+                    clean_all_frames.append(f_clean)
+
+                response_data = {k: val for k, val in primary.items() if k not in ("all_unique_vehicles", "video_meta")}
+                response_data["saved_capture_id"] = saved_ids[0] if saved_ids else None
+                response_data["video_meta"] = video_result["video_summary"]
+                response_data["all_unique_vehicles"] = clean_vehicles
+                response_data["all_frame_detections"] = clean_all_frames
+                return sanitize_json_obj(response_data)
             else:
                 raise HTTPException(status_code=400, detail="Tidak ada kendaraan terdeteksi dalam video.")
         else:
@@ -108,17 +175,19 @@ async def detect_vehicle(
                 "lat": cam_info["lat"],
                 "lng": cam_info["lng"],
                 "zone": cam_info["zone"],
-                "plate_number": detection_result["plate_number"],
-                "vehicle_type": detection_result["vehicle_type"],
-                "vehicle_color": detection_result["vehicle_color"],
-                "visual_description": detection_result["visual_description"],
-                "confidence": detection_result["plate_confidence"],
+                "plate_number": str(detection_result["plate_number"]),
+                "vehicle_type": str(detection_result["vehicle_type"]),
+                "vehicle_color": str(detection_result["vehicle_color"]),
+                "visual_description": str(detection_result["visual_description"]),
+                "confidence": float(detection_result["plate_confidence"]),
                 "timestamp": ts
             })
             detection_result["saved_capture_id"] = new_capture["id"]
-            return detection_result
+            return sanitize_json_obj(detection_result)
 
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"AI Detection failed: {str(e)}")
 
 

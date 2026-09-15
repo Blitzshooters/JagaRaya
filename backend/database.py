@@ -12,9 +12,32 @@ class JagaRayaDatabase:
             {"id": "CAM-006", "name": "Kuningan Flyover", "lat": -6.2245, "lng": 106.8320, "zone": "Jakarta Selatan", "status": "ONLINE"},
             {"id": "CAM-007", "name": "Perempatan Tomang", "lat": -6.1770, "lng": 106.7910, "zone": "Jakarta Barat", "status": "ONLINE"},
             {"id": "CAM-008", "name": "Cawang Interjunction", "lat": -6.2468, "lng": 106.8720, "zone": "Jakarta Timur", "status": "ONLINE"},
-            {"id": "CAM-009", "name": "TB Simatupang Outer Ring", "lat": -6.2915, "lng": 106.8210, "zone": "Jakarta Selatan", "status": "ONLINE"},
-            {"id": "CAM-010", "name": "Harmoni Central Hub", "lat": -6.1670, "lng": 106.8205, "zone": "Jakarta Pusat", "status": "ONLINE"},
+            {"id": "CAM-009", "name": "TB Simatupang Outer Ring", "lat": -6.2915, "lng": 106.8210, "zone": "Jakarta Selatan", "city": "Jakarta", "status": "ONLINE"},
+            {"id": "CAM-010", "name": "Harmoni Central Hub", "lat": -6.1670, "lng": 106.8205, "zone": "Jakarta Pusat", "city": "Jakarta", "status": "ONLINE"},
+            
+            # Preset Kamera Bandung
+            {"id": "CAM-101", "name": "Gedung Sate Junction", "lat": -6.9025, "lng": 107.6188, "zone": "Bandung Wetan", "city": "Bandung", "status": "ONLINE"},
+            {"id": "CAM-102", "name": "Simpang Dago ITB", "lat": -6.8915, "lng": 107.6107, "zone": "Coblong", "city": "Bandung", "status": "ONLINE"},
+            {"id": "CAM-103", "name": "Alun-Alun Bandung", "lat": -6.9218, "lng": 107.6071, "zone": "Regol", "city": "Bandung", "status": "ONLINE"},
+
+            # Preset Kamera Surabaya
+            {"id": "CAM-201", "name": "Tugu Pahlawan Cross", "lat": -7.2458, "lng": 112.7378, "zone": "Bubutan", "city": "Surabaya", "status": "ONLINE"},
+            {"id": "CAM-202", "name": "Simpang Darmo Park", "lat": -7.2891, "lng": 112.7342, "zone": "Wonokromo", "city": "Surabaya", "status": "ONLINE"},
+
+            # Preset Kamera Bali / Denpasar
+            {"id": "CAM-301", "name": "Simpang Dewa Ruci Kuta", "lat": -8.7188, "lng": 115.1834, "zone": "Kuta", "city": "Bali", "status": "ONLINE"},
+            {"id": "CAM-302", "name": "Kawasan Renon Denpasar", "lat": -8.6705, "lng": 115.2285, "zone": "Denpasar", "city": "Bali", "status": "ONLINE"},
+
+            # Preset Kamera Yogyakarta
+            {"id": "CAM-401", "name": "Simpang Tugu Jogja", "lat": -7.7828, "lng": 110.3671, "zone": "Jetis", "city": "Yogyakarta", "status": "ONLINE"},
+            {"id": "CAM-402", "name": "Kawasan Malioboro", "lat": -7.7926, "lng": 110.3658, "zone": "Danurejan", "city": "Yogyakarta", "status": "ONLINE"}
         ]
+        
+        # Add city attribute to initial cameras
+        for c in self.camera_nodes:
+            if "city" not in c:
+                c["city"] = "Jakarta"
+
         self.vehicle_captures = []
         self._seed_data()
 
@@ -50,7 +73,13 @@ class JagaRayaDatabase:
             ("CAM-001", 11, "B 5555 KOK", "Sepeda Motor", "Hitam", "Sepeda Motor Hitam melintas Semanggi Loop.")
         ]
 
-        sample_routes = [rute_1, rute_2, rute_3, rute_4]
+        # Target 5: Bandung Sedan D 1010 BD moving Gedung Sate -> Dago
+        rute_5 = [
+            ("CAM-101", 35, "D 1010 BD", "Sedan", "Biru", "Sedan Biru terdeteksi di perempatan Gedung Sate Bandung."),
+            ("CAM-102", 15, "D 1010 BD", "Sedan", "Biru", "Sedan Biru melintas kawasan Dago ITB Bandung.")
+        ]
+
+        sample_routes = [rute_1, rute_2, rute_3, rute_4, rute_5]
 
         for route in sample_routes:
             for cam_id, minutes_ago, plate, vtype, color, desc in route:
@@ -63,7 +92,8 @@ class JagaRayaDatabase:
                         "camera_name": cam["name"],
                         "lat": cam["lat"],
                         "lng": cam["lng"],
-                        "zone": cam["zone"],
+                        "zone": cam.get("zone", "Zona Default"),
+                        "city": cam.get("city", "Jakarta"),
                         "plate_number": plate,
                         "vehicle_type": vtype,
                         "vehicle_color": color,
@@ -79,6 +109,24 @@ class JagaRayaDatabase:
         self.vehicle_captures.append(capture_data)
         return capture_data
 
+    def add_camera(self, cam_data):
+        new_id = f"CAM-CUST-{len(self.camera_nodes)+1:03d}"
+        camera_node = {
+            "id": cam_data.get("id", new_id),
+            "name": cam_data.get("name", "Titik Kamera Kustom"),
+            "lat": float(cam_data["lat"]),
+            "lng": float(cam_data["lng"]),
+            "zone": cam_data.get("zone", "Zona Kustom"),
+            "city": cam_data.get("city", "Kustom"),
+            "status": cam_data.get("status", "ONLINE")
+        }
+        self.camera_nodes.append(camera_node)
+        return camera_node
+
+    def delete_camera(self, cam_id):
+        self.camera_nodes = [c for c in self.camera_nodes if c["id"] != cam_id]
+        return True
+
     def get_cameras(self):
         return self.camera_nodes
 
@@ -86,3 +134,4 @@ class JagaRayaDatabase:
         return self.vehicle_captures
 
 db = JagaRayaDatabase()
+

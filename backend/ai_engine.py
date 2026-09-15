@@ -163,14 +163,14 @@ class VehicleAIEngine:
         )
 
         return {
-            "plate_number": plate_text,
-            "plate_confidence": round(plate_conf, 2),
-            "vehicle_type": vehicle_type,
-            "type_confidence": round(confidence_type, 2),
-            "vehicle_color": color_name,
-            "visual_description": visual_desc,
-            "bounding_box": plate_box,
-            "vehicle_bbox": vehicle_box,
+            "plate_number": str(plate_text),
+            "plate_confidence": float(round(float(plate_conf), 2)),
+            "vehicle_type": str(vehicle_type),
+            "type_confidence": float(round(float(confidence_type), 2)),
+            "vehicle_color": str(color_name),
+            "visual_description": str(visual_desc),
+            "bounding_box": [int(b) for b in plate_box] if plate_box else None,
+            "vehicle_bbox": [int(b) for b in vehicle_box] if vehicle_box else None,
             "annotated_image_base64": f"data:image/jpeg;base64,{annotated_img_b64}",
             "model_info": {
                 "detector": "YOLOv8n (COCO pretrained)" if self.yolo_model else "OpenCV Contour (fallback)",
@@ -179,10 +179,11 @@ class VehicleAIEngine:
             }
         }
 
-    def detect_and_analyze_video(self, video_bytes: bytes, max_frames: int = 8):
+    def detect_and_analyze_video(self, video_bytes: bytes, sample_interval_sec: float = 0.5):
         """
         Processes an uploaded CCTV video file frame-by-frame using OpenCV VideoCapture.
-        Samples frames across the video duration and extracts vehicle ALPR hits.
+        Samples 1 frame every sample_interval_sec (default 0.5s) across the entire video duration
+        and extracts vehicle ALPR hits for all detected frames.
         """
         import tempfile
         import os
@@ -198,17 +199,20 @@ class VehicleAIEngine:
 
             total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
             fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
-            duration_sec = total_frames / max(fps, 1)
+            if fps <= 0 or np.isnan(fps):
+                fps = 25.0
 
+            duration_sec = total_frames / max(fps, 1.0)
             if total_frames <= 0:
                 total_frames = 30
 
-            step = max(1, total_frames // max_frames)
+            # Calculate frame step for 0.5 seconds sampling rate
+            step = max(1, int(round(fps * sample_interval_sec)))
             frame_detections = []
             frame_count = 0
             sampled_count = 0
 
-            while cap.isOpened() and sampled_count < max_frames:
+            while cap.isOpened():
                 ret, frame = cap.read()
                 if not ret:
                     break
@@ -223,7 +227,10 @@ class VehicleAIEngine:
 
                     try:
                         res = self.detect_and_analyze(frame_bytes)
-                        res["timestamp_in_video"] = f"{int(sec_offset // 60):02d}:{int(sec_offset % 60):02d}"
+                        mins = int(sec_offset // 60)
+                        secs = sec_offset % 60
+                        res["timestamp_in_video"] = f"{mins:02d}:{secs:04.1f}"
+                        res["timestamp_seconds"] = sec_offset
                         res["frame_number"] = frame_count
                         frame_detections.append(res)
                     except Exception as e:
@@ -250,10 +257,12 @@ class VehicleAIEngine:
                     "total_frames_in_video": total_frames,
                     "fps": round(fps, 1),
                     "duration_seconds": round(duration_sec, 1),
-                    "frames_sampled": len(frame_detections),
+                    "sample_interval_sec": sample_interval_sec,
+                    "frames_sampled": sampled_count,
+                    "vehicle_frames_detected": len(frame_detections),
                     "unique_vehicles_detected": len(unique_vehicles)
                 },
-                "primary_detection": unique_vehicles[0] if unique_vehicles else None,
+                "primary_detection": unique_vehicles[0] if unique_vehicles else (frame_detections[0] if frame_detections else None),
                 "all_frame_detections": frame_detections,
                 "unique_vehicles": unique_vehicles
             }
