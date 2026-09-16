@@ -206,8 +206,11 @@ class VehicleAIEngine:
             if total_frames <= 0:
                 total_frames = 30
 
-            # Calculate frame step for 0.5 seconds sampling rate
-            step = max(1, int(round(fps * sample_interval_sec)))
+            # Calculate frame step based on sample_interval_sec (0.0 means process every frame)
+            if sample_interval_sec <= 0:
+                step = 1
+            else:
+                step = max(1, int(round(fps * sample_interval_sec)))
             frame_detections = []
             frame_count = 0
             sampled_count = 0

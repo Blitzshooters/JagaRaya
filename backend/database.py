@@ -1,8 +1,22 @@
 import datetime
 import math
+import os
+import json
+
+DATA_FILE = os.path.join(os.path.dirname(__file__), "data_store.json")
 
 class JagaRayaDatabase:
     def __init__(self):
+        self.camera_nodes = []
+        self.vehicle_captures = []
+        
+        if os.path.exists(DATA_FILE):
+            self._load_from_disk()
+        else:
+            self._init_default_data()
+            self._save_to_disk()
+
+    def _init_default_data(self):
         self.camera_nodes = [
             {"id": "CAM-001", "name": "Simpang Semanggi", "lat": -6.2185, "lng": 106.8142, "zone": "Jakarta Selatan", "status": "ONLINE"},
             {"id": "CAM-002", "name": "Bundaran HI", "lat": -6.1930, "lng": 106.8230, "zone": "Jakarta Pusat", "status": "ONLINE"},
@@ -44,7 +58,6 @@ class JagaRayaDatabase:
     def _seed_data(self):
         now = datetime.datetime.now()
         
-        # Target 1: Black Sedan B 1234 XYZ moving from Senayan -> Semanggi -> Kuningan -> Pancoran
         rute_1 = [
             ("CAM-004", 45, "B 1234 XYZ", "Sedan", "Hitam", "Sedan warna Hitam terdeteksi dengan Plat Nomor [B 1234 XYZ], velg alloy perak."),
             ("CAM-001", 30, "B 1234 XYZ", "Sedan", "Hitam", "Sedan warna Hitam terdeteksi dengan Plat Nomor [B 1234 XYZ], kaca film gelap."),
@@ -52,7 +65,6 @@ class JagaRayaDatabase:
             ("CAM-005", 5, "B 1234 XYZ", "Sedan", "Hitam", "Sedan warna Hitam terdeteksi dengan Plat Nomor [B 1234 XYZ], melintas di Simpang Pancoran.")
         ]
         
-        # Target 2: Red SUV D 9999 SS moving from Tomang -> Harmoni -> Monas -> Bundaran HI
         rute_2 = [
             ("CAM-007", 60, "D 9999 SS", "SUV / MPV", "Merah", "SUV warna Merah dengan Plat Nomor [D 9999 SS], roof rack bagasi atas."),
             ("CAM-010", 42, "D 9999 SS", "SUV / MPV", "Merah", "SUV warna Merah dengan Plat Nomor [D 9999 SS], roof rack bagasi atas."),
@@ -60,20 +72,17 @@ class JagaRayaDatabase:
             ("CAM-002", 10, "D 9999 SS", "SUV / MPV", "Merah", "SUV warna Merah terdeteksi di sekitar Bundaran HI.")
         ]
 
-        # Target 3: White Minibus F 4321 AB moving from TB Simatupang -> Pancoran -> Cawang
         rute_3 = [
             ("CAM-009", 50, "F 4321 AB", "Minibus / Hatchback", "Putih", "Minibus warna Putih dengan Plat [F 4321 AB], stiker kaca belakang."),
             ("CAM-005", 30, "F 4321 AB", "Minibus / Hatchback", "Putih", "Minibus warna Putih melintasi Pancoran."),
             ("CAM-008", 12, "F 4321 AB", "Minibus / Hatchback", "Putih", "Minibus Putih terdeteksi di Cawang Interjunction.")
         ]
 
-        # Target 4: Black Motorbike B 5555 KOK moving around Kuningan & Semanggi
         rute_4 = [
             ("CAM-006", 22, "B 5555 KOK", "Sepeda Motor", "Hitam", "Sepeda Motor Hitam Plat [B 5555 KOK], boks bagasi belakang."),
             ("CAM-001", 11, "B 5555 KOK", "Sepeda Motor", "Hitam", "Sepeda Motor Hitam melintas Semanggi Loop.")
         ]
 
-        # Target 5: Bandung Sedan D 1010 BD moving Gedung Sate -> Dago
         rute_5 = [
             ("CAM-101", 35, "D 1010 BD", "Sedan", "Biru", "Sedan Biru terdeteksi di perempatan Gedung Sate Bandung."),
             ("CAM-102", 15, "D 1010 BD", "Sedan", "Biru", "Sedan Biru melintas kawasan Dago ITB Bandung.")
@@ -102,11 +111,34 @@ class JagaRayaDatabase:
                         "timestamp": timestamp
                     })
 
+    def _save_to_disk(self):
+        try:
+            data = {
+                "camera_nodes": self.camera_nodes,
+                "vehicle_captures": self.vehicle_captures
+            }
+            with open(DATA_FILE, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+        except Exception as e:
+            print(f"[WARN] Gagal menyimpan data ke disk: {e}")
+
+    def _load_from_disk(self):
+        try:
+            with open(DATA_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                self.camera_nodes = data.get("camera_nodes", [])
+                self.vehicle_captures = data.get("vehicle_captures", [])
+        except Exception as e:
+            print(f"[WARN] Gagal memuat data dari disk, menggunakan data bawaan: {e}")
+            self._init_default_data()
+            self._save_to_disk()
+
     def add_capture(self, capture_data):
         capture_data["id"] = f"CAP-{len(self.vehicle_captures)+1:04d}"
         if "timestamp" not in capture_data:
             capture_data["timestamp"] = datetime.datetime.now().isoformat()
         self.vehicle_captures.append(capture_data)
+        self._save_to_disk()
         return capture_data
 
     def add_camera(self, cam_data):
@@ -121,10 +153,12 @@ class JagaRayaDatabase:
             "status": cam_data.get("status", "ONLINE")
         }
         self.camera_nodes.append(camera_node)
+        self._save_to_disk()
         return camera_node
 
     def delete_camera(self, cam_id):
         self.camera_nodes = [c for c in self.camera_nodes if c["id"] != cam_id]
+        self._save_to_disk()
         return True
 
     def get_cameras(self):
@@ -134,4 +168,5 @@ class JagaRayaDatabase:
         return self.vehicle_captures
 
 db = JagaRayaDatabase()
+
 

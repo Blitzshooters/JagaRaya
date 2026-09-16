@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Upload, Scan, CheckCircle2, AlertCircle, Sparkles, Navigation, Layers, Tag, ShieldAlert, Cpu, Eye, Video, Camera, Calendar, Clock, Film, Radio } from 'lucide-react';
+import { Upload, Scan, CheckCircle2, AlertCircle, Sparkles, Navigation, Layers, Tag, ShieldAlert, Cpu, Eye, Video, Camera, Calendar, Clock, Film, Radio, Sliders } from 'lucide-react';
 
 export default function DetectorView({ onTrackVehicle }) {
   const [selectedFile, setSelectedFile] = useState(null);
@@ -10,15 +10,23 @@ export default function DetectorView({ onTrackVehicle }) {
   const [selectedFrameIndex, setSelectedFrameIndex] = useState(0);
   const [error, setError] = useState(null);
 
-  // CCTV & Date/Time Controls
+  // CCTV & Date/Time Controls & Sampling Rate Interval
   const [cameras, setCameras] = useState([]);
   const [selectedCamId, setSelectedCamId] = useState('CAM-001');
   const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
   const [selectedTime, setSelectedTime] = useState(new Date().toTimeString().slice(0, 5));
+  const [sampleIntervalSec, setSampleIntervalSec] = useState(0.5);
 
-  useEffect(() => {
-    fetchCameras();
-  }, []);
+  const intervalPresets = [
+    { label: "Semua Frame (0s)", value: 0 },
+    { label: "0.1s / Frame", value: 0.1 },
+    { label: "0.2s / Frame", value: 0.2 },
+    { label: "0.5s / Frame (Default)", value: 0.5 },
+    { label: "1.0s / Frame", value: 1.0 },
+    { label: "2.0s / Frame", value: 2.0 },
+    { label: "3.0s / Frame", value: 3.0 },
+    { label: "5.0s / Frame", value: 5.0 },
+  ];
 
   const fetchCameras = async () => {
     try {
@@ -28,9 +36,13 @@ export default function DetectorView({ onTrackVehicle }) {
         setCameras(data);
       }
     } catch (err) {
-      console.log("Using fallback camera list");
+      console.log("Using fallback camera list:", err);
     }
   };
+
+  useEffect(() => {
+    fetchCameras();
+  }, []);
 
   const samplePresets = [
     {
@@ -114,6 +126,7 @@ export default function DetectorView({ onTrackVehicle }) {
         formData.append("file", fileToUpload);
         formData.append("camera_id", selectedCamId);
         formData.append("custom_timestamp", customTimestamp);
+        formData.append("sample_interval_sec", sampleIntervalSec);
 
         const response = await fetch("http://127.0.0.1:8000/api/detect", {
           method: "POST",
@@ -133,18 +146,18 @@ export default function DetectorView({ onTrackVehicle }) {
         const preset = samplePresets.find(p => p.videoUrl === previewUrl) || samplePresets[0];
         const selectedCam = cameras.find(c => c.id === selectedCamId) || { name: 'Simpang Semanggi' };
         
-        // Generate simulated 0.5-second frame detections sequence
+        // Generate simulated frame detections sequence based on chosen sample interval
         const simulatedFrames = [];
-        const durationSec = 6.0;
-        const intervalSec = 0.5;
-        const totalFramesCount = Math.floor(durationSec / intervalSec);
+        const intervalSec = sampleIntervalSec <= 0 ? 0.1 : sampleIntervalSec;
+        const durationSec = Math.max(10.0, intervalSec * 4);
+        const totalFramesCount = Math.max(1, Math.floor(durationSec / intervalSec));
         
         for (let i = 0; i < totalFramesCount; i++) {
           const sec = (i * intervalSec).toFixed(1);
           const mins = String(Math.floor(sec / 60)).padStart(2, '0');
           const secs = String((sec % 60).toFixed(1)).padStart(4, '0');
           simulatedFrames.push({
-            frame_number: i * 15,
+            frame_number: i * (sampleIntervalSec <= 0 ? 1 : 15),
             timestamp_in_video: `${mins}:${secs}`,
             timestamp_seconds: parseFloat(sec),
             plate_number: preset.plate,
@@ -165,7 +178,7 @@ export default function DetectorView({ onTrackVehicle }) {
             total_frames_in_video: 180,
             fps: 30.0,
             duration_seconds: durationSec,
-            sample_interval_sec: 0.5,
+            sample_interval_sec: sampleIntervalSec,
             frames_sampled: simulatedFrames.length,
             vehicle_frames_detected: simulatedFrames.length,
             unique_vehicles_detected: 1
@@ -201,7 +214,7 @@ export default function DetectorView({ onTrackVehicle }) {
             <div className="flex items-center space-x-2">
               <span className="px-3 py-1 bg-blue-50 text-[#0071e3] text-xs font-semibold rounded-full border border-blue-200 flex items-center space-x-1">
                 <Video className="w-3.5 h-3.5 mr-1" />
-                <span>Analisis Video CCTV Real-time (0.5 Detik/Frame)</span>
+                <span>Analisis Video CCTV ({sampleIntervalSec === 0 ? 'Semua Frame' : `${sampleIntervalSec}s/Frame`})</span>
               </span>
               <span className="px-3 py-1 bg-emerald-50 text-emerald-700 text-xs font-semibold rounded-full border border-emerald-200">
                 YOLOv8 + MobileNetV3 + EasyOCR
@@ -211,7 +224,7 @@ export default function DetectorView({ onTrackVehicle }) {
               Deteksi Video CCTV & Pemindai Plat Nomor (ALPR)
             </h2>
             <p className="text-sm text-slate-500">
-              Pipeline mendeteksi 1 frame setiap 0.5 detik di seluruh durasi video untuk menampilkan semua kendaraan terdeteksi tanpa batasan 8 frame.
+              Pipeline memproses frame video dengan interval {sampleIntervalSec === 0 ? 'semua frame tanpa dilewati' : `1 frame setiap ${sampleIntervalSec} detik`} di seluruh durasi video.
             </p>
           </div>
 
@@ -239,12 +252,12 @@ export default function DetectorView({ onTrackVehicle }) {
         <div className="lg:col-span-7 space-y-6">
           <div className="bg-white border border-slate-200/80 rounded-3xl p-6 shadow-sm space-y-5">
             
-            {/* Metadata Selection: Camera & Timestamp */}
+            {/* Metadata Selection: Camera, Timestamp & Frame Sampling Rate */}
             <div className="p-5 bg-gradient-to-r from-blue-50/80 via-slate-50 to-indigo-50/50 rounded-2xl border border-blue-100 space-y-3.5 shadow-sm">
               <div className="flex items-center justify-between">
                 <h4 className="text-xs font-bold text-[#1d1d1f] uppercase tracking-wider flex items-center space-x-1.5">
                   <Camera className="w-4 h-4 text-[#0071e3]" />
-                  <span>Pengaturan Location Node CCTV & Timestamp Rekaman</span>
+                  <span>Pengaturan Node CCTV, Timestamp & Sampling Rate Video</span>
                 </h4>
                 <span className="px-2.5 py-0.5 bg-blue-100/80 text-[#0071e3] text-[10px] font-bold rounded-full">
                   Metadata Logging
@@ -276,7 +289,7 @@ export default function DetectorView({ onTrackVehicle }) {
                 <div className="space-y-1">
                   <label className="text-slate-700 font-semibold flex items-center space-x-1">
                     <Calendar className="w-3.5 h-3.5 text-blue-600" />
-                    <span>Tanggal Rekaman Video:</span>
+                    <span>Tanggal Rekaman:</span>
                   </label>
                   <input
                     type="date"
@@ -298,6 +311,54 @@ export default function DetectorView({ onTrackVehicle }) {
                     onChange={(e) => setSelectedTime(e.target.value)}
                     className="w-full px-3 py-2 bg-white border border-slate-300 rounded-xl text-xs text-[#1d1d1f] font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500 shadow-sm"
                   />
+                </div>
+
+                {/* Frame Sampling Rate Selector */}
+                <div className="space-y-2.5 sm:col-span-3 pt-3 border-t border-blue-100">
+                  <div className="flex items-center justify-between">
+                    <label className="text-slate-700 font-semibold flex items-center space-x-1.5 shrink-0">
+                      <Sliders className="w-3.5 h-3.5 text-[#0071e3]" />
+                      <span>Interval Sampling Frame Video:</span>
+                    </label>
+                    <span className="px-2.5 py-0.5 bg-blue-100 text-[#0071e3] text-xs font-mono font-bold rounded-lg border border-blue-200">
+                      {sampleIntervalSec === 0 ? 'Semua Frame (0s / Continuous)' : `${sampleIntervalSec}s / Frame (${(1 / sampleIntervalSec).toFixed(1)} FPS)`}
+                    </span>
+                  </div>
+
+                  <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
+                    {/* Preset Buttons */}
+                    <div className="flex items-center space-x-1 overflow-x-auto py-0.5 flex-1">
+                      {intervalPresets.map((p) => (
+                        <button
+                          key={p.value}
+                          type="button"
+                          onClick={() => setSampleIntervalSec(p.value)}
+                          className={`px-2.5 py-1 rounded-xl text-[11px] font-semibold transition-all border whitespace-nowrap ${
+                            sampleIntervalSec === p.value
+                              ? 'bg-[#0071e3] text-white border-[#0071e3] shadow-sm'
+                              : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-100'
+                          }`}
+                        >
+                          {p.label}
+                        </button>
+                      ))}
+                    </div>
+
+                    {/* Quick Range Slider (0s to 5s) */}
+                    <div className="flex items-center space-x-2 bg-white px-3 py-1.5 rounded-xl border border-slate-200 shadow-sm shrink-0">
+                      <span className="text-[10px] text-slate-500 font-mono">0s</span>
+                      <input
+                        type="range"
+                        min="0"
+                        max="5"
+                        step="0.1"
+                        value={sampleIntervalSec}
+                        onChange={(e) => setSampleIntervalSec(parseFloat(e.target.value))}
+                        className="w-24 h-1.5 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-[#0071e3]"
+                      />
+                      <span className="text-[10px] text-slate-500 font-mono">5s</span>
+                    </div>
+                  </div>
                 </div>
 
               </div>
@@ -339,8 +400,12 @@ export default function DetectorView({ onTrackVehicle }) {
                   {isAnalyzing && (
                     <div className="absolute inset-0 bg-slate-950/85 backdrop-blur-md flex flex-col items-center justify-center text-white space-y-3 z-20">
                       <div className="w-12 h-12 border-4 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
-                      <p className="text-xs font-bold tracking-wider text-blue-400">Ekstraksi & Sampling Video (Tiap 0.5s Per Frame)...</p>
-                      <p className="text-[11px] text-slate-400 font-mono">Memindai plat nomor dan klasifikasi kendaraan per 0.5 detik...</p>
+                      <p className="text-xs font-bold tracking-wider text-blue-400">
+                        Ekstraksi & Sampling Video ({sampleIntervalSec === 0 ? 'Semua Frame' : `Tiap ${sampleIntervalSec}s Per Frame`})...
+                      </p>
+                      <p className="text-[11px] text-slate-400 font-mono">
+                        Memindai plat nomor dan klasifikasi kendaraan {sampleIntervalSec === 0 ? 'pada setiap frame' : `per ${sampleIntervalSec} detik`}...
+                      </p>
                     </div>
                   )}
                 </div>
@@ -357,7 +422,7 @@ export default function DetectorView({ onTrackVehicle }) {
                   </div>
                   <div className="inline-flex items-center space-x-1.5 px-3 py-1 bg-blue-50 border border-blue-200 text-[#0071e3] rounded-full text-xs font-semibold">
                     <Video className="w-3.5 h-3.5" />
-                    <span>Mode Sampling 0.5s Per Frame Active</span>
+                    <span>Mode Sampling {sampleIntervalSec === 0 ? 'Semua Frame' : `${sampleIntervalSec}s Per Frame`} Active</span>
                   </div>
                 </div>
               )}
@@ -378,7 +443,11 @@ export default function DetectorView({ onTrackVehicle }) {
                 className="flex items-center space-x-2 px-6 py-3 bg-[#0071e3] hover:bg-blue-600 text-white font-semibold text-sm rounded-xl transition-all shadow-md disabled:opacity-50 disabled:cursor-not-allowed active:scale-95"
               >
                 <Sparkles className="w-4 h-4" />
-                <span>{isAnalyzing ? 'Memproses Video...' : 'Jalankan Deteksi Video AI (0.5s/Frame)'}</span>
+                <span>
+                  {isAnalyzing
+                    ? 'Memproses Video...'
+                    : `Jalankan Deteksi Video AI (${sampleIntervalSec === 0 ? 'Semua Frame' : `${sampleIntervalSec}s/Frame`})`}
+                </span>
               </button>
             </div>
 
@@ -390,14 +459,16 @@ export default function DetectorView({ onTrackVehicle }) {
             )}
           </div>
 
-          {/* All Detected Frames List Gallery (Every 0.5s) */}
+          {/* All Detected Frames List Gallery */}
           {result && result.all_frame_detections && result.all_frame_detections.length > 0 && (
             <div className="bg-white border border-slate-200/80 rounded-3xl p-6 shadow-sm space-y-4">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 pb-3">
                 <div>
                   <h3 className="text-base font-bold text-[#1d1d1f] flex items-center space-x-2">
                     <Layers className="w-5 h-5 text-[#0071e3]" />
-                    <span>Semua Frame Kendaraan Terdeteksi (Setiap 0.5 Detik)</span>
+                    <span>
+                      Semua Frame Kendaraan Terdeteksi ({sampleIntervalSec === 0 ? 'Semua Frame / 0s' : `Setiap ${sampleIntervalSec} Detik`})
+                    </span>
                   </h3>
                   <p className="text-xs text-slate-500 mt-0.5">
                     Klik pada kartu frame di bawah untuk menampilkan detail bounding box & ALPR pada viewer utama.
@@ -405,7 +476,7 @@ export default function DetectorView({ onTrackVehicle }) {
                 </div>
                 <div className="flex items-center space-x-2 shrink-0">
                   <span className="px-2.5 py-1 bg-blue-50 text-[#0071e3] text-xs font-mono font-bold rounded-lg border border-blue-200">
-                    ⏱️ Interval: 0.5s
+                    ⏱️ Interval: {sampleIntervalSec === 0 ? 'Semua Frame (0s)' : `${sampleIntervalSec}s/Frame`}
                   </span>
                   <span className="px-2.5 py-1 bg-emerald-50 text-emerald-700 text-xs font-mono font-bold rounded-lg border border-emerald-200">
                     🚘 Total: {result.all_frame_detections.length} Frame
@@ -536,12 +607,16 @@ export default function DetectorView({ onTrackVehicle }) {
                   <div className="p-3.5 bg-blue-50/80 rounded-2xl border border-blue-100 text-xs space-y-1">
                     <p className="font-bold text-[#0071e3] flex items-center space-x-1">
                       <Film className="w-3.5 h-3.5 mr-1" />
-                      <span>Statistik Sampling Video CCTV (0.5s):</span>
+                      <span>
+                        Statistik Sampling Video CCTV ({result.video_meta.sample_interval_sec === 0 ? 'Semua Frame / 0s' : `${result.video_meta.sample_interval_sec}s/Frame`}):
+                      </span>
                     </p>
                     <div className="grid grid-cols-2 gap-2 text-[11px] text-slate-700 font-mono mt-1">
                       <div>Durasi: {result.video_meta.duration_seconds}s</div>
                       <div>FPS Video: {result.video_meta.fps}</div>
-                      <div>Sampling Rate: 0.5 Detik</div>
+                      <div>
+                        Sampling Rate: {result.video_meta.sample_interval_sec === 0 ? 'Semua Frame (0s)' : `${result.video_meta.sample_interval_sec} Detik / Frame`}
+                      </div>
                       <div>Total Frame Diuji: {result.video_meta.frames_sampled}</div>
                       <div className="col-span-2 text-emerald-700 font-bold">
                         Frame Kendaraan Terdeteksi: {result.video_meta.vehicle_frames_detected || result.video_meta.frames_sampled}

@@ -113,20 +113,22 @@ def sanitize_json_obj(obj, visited=None):
 async def detect_vehicle(
     file: UploadFile = File(...),
     camera_id: Optional[str] = Form("CAM-001"),
-    custom_timestamp: Optional[str] = Form(None)
+    custom_timestamp: Optional[str] = Form(None),
+    sample_interval_sec: Optional[float] = Form(0.5)
 ):
     contents = await file.read()
     
     # Resolve selected CCTV camera info
     cam_info = next((c for c in db.get_cameras() if c["id"] == camera_id), db.get_cameras()[0])
     ts = custom_timestamp if custom_timestamp else datetime.datetime.now().isoformat()
+    interval = sample_interval_sec if sample_interval_sec is not None else 0.5
     
     is_video = file.content_type.startswith("video/") or file.filename.lower().endswith(('.mp4', '.avi', '.mov', '.webm', '.mkv'))
     
     try:
         if is_video:
             # Video stream frame sampling analysis
-            video_result = ai_engine.detect_and_analyze_video(contents)
+            video_result = ai_engine.detect_and_analyze_video(contents, sample_interval_sec=interval)
             primary = video_result["primary_detection"]
             
             # Save detected unique vehicles to database
