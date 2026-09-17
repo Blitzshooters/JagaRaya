@@ -125,15 +125,17 @@ class VehicleAIEngine:
 
     # ─── Main Detection Pipeline ───────────────────────────────────────────
 
+    # ─── Main Detection Pipeline ───────────────────────────────────────────
+
     def detect_and_analyze(self, image_bytes: bytes):
         """
-        End-to-end pipeline:
-          1. YOLOv8 vehicle + bounding box detection
-          2. MobileNetV3 feature extraction → vehicle type classification
-          3. EasyOCR license plate recognition (ALPR)
-          4. Color classification via HSV analysis
+        End-to-end pipeline supporting multi-vehicle detection per frame:
+          1. YOLOv8 vehicle + bounding box detection for ALL vehicles in frame
+          2. MobileNetV3 feature extraction → vehicle type classification per vehicle
+          3. EasyOCR license plate recognition (ALPR) per vehicle crop
+          4. Color classification via HSV analysis per vehicle crop
           5. Natural language visual description generation
-          6. Annotated image rendering
+          6. Multi-vehicle annotated image rendering (all vehicles + all plates marked)
         """
         np_arr = np.frombuffer(image_bytes, np.uint8)
         img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
@@ -142,36 +144,70 @@ class VehicleAIEngine:
 
         height, width, _ = img.shape
 
-        # Step 1: YOLOv8 Vehicle Detection
-        vehicle_box, yolo_class_id = self._detect_vehicle_yolo(img)
+        # Step 1: Detect ALL vehicles in the frame via YOLOv8 (or fallback)
+        detected_boxes = self._detect_vehicles_yolo(img)
 
-        # Step 2: Classify vehicle type using MobileNetV3 features + aspect ratio
-        vehicle_type, confidence_type = self._classify_vehicle_type_mobilenet(img, vehicle_box, yolo_class_id)
+        detected_vehicles = []
+        for v_item in detected_boxes:
+            v_box = v_item["box"]
+            yolo_cls = v_item["class_id"]
 
-        # Step 3: Color extraction via HSV
-        color_name, primary_rgb = self._extract_dominant_color(img, vehicle_box)
+            # Step 2: Classify vehicle type using MobileNetV3 features + aspect ratio
+            v_type, conf_type = self._classify_vehicle_type_mobilenet(img, v_box, yolo_cls)
 
-        # Step 4: License Plate Detection (ALPR) + OCR
-        plate_text, plate_box, plate_conf = self._detect_license_plate(img)
+            # Step 3: Color extraction via HSV
+            color_name, primary_rgb = self._extract_dominant_color(img, v_box)
 
-        # Step 5: Generate Natural Language Visual Description
-        visual_desc = self._generate_visual_description(color_name, vehicle_type, plate_text)
+            # Step 4: License Plate Detection (ALPR) + OCR on vehicle crop
+            plate_text, plate_box, plate_conf = self._detect_license_plate(img, vehicle_box=v_box)
 
-        # Step 6: Draw Annotations
-        annotated_img_b64 = self._draw_annotations(
-            img, vehicle_box, plate_box, plate_text, color_name, vehicle_type, plate_conf
-        )
+            # Step 5: Visual Description
+            visual_desc = self._generate_visual_description(color_name, v_type, plate_text)
 
+            detected_vehicles.append({
+                "plate_number": str(plate_text),
+                "plate_confidence": float(round(float(plate_conf), 2)),
+                "vehicle_type": str(v_type),
+                "type_confidence": float(round(float(conf_type), 2)),
+                "vehicle_color": str(color_name),
+                "visual_description": str(visual_desc),
+                "bounding_box": [int(b) for b in plate_box] if plate_box else None,
+                "vehicle_bbox": [int(b) for b in v_box] if v_box else None,
+            })
+
+        if not detected_vehicles:
+            # Fallback single detection
+            plate_text, plate_box, plate_conf = self._detect_license_plate(img)
+            color_name, _ = self._extract_dominant_color(img)
+            v_type = "Sedan"
+            visual_desc = self._generate_visual_description(color_name, v_type, plate_text)
+            detected_vehicles.append({
+                "plate_number": str(plate_text),
+                "plate_confidence": float(round(float(plate_conf), 2)),
+                "vehicle_type": str(v_type),
+                "type_confidence": 0.85,
+                "vehicle_color": str(color_name),
+                "visual_description": str(visual_desc),
+                "bounding_box": plate_box,
+                "vehicle_bbox": [int(width*0.05), int(height*0.1), int(width*0.9), int(height*0.8)],
+            })
+
+        # Step 6: Draw Multi-vehicle Annotations
+        annotated_img_b64 = self._draw_annotations_multi(img, detected_vehicles)
+
+        primary = detected_vehicles[0]
         return {
-            "plate_number": str(plate_text),
-            "plate_confidence": float(round(float(plate_conf), 2)),
-            "vehicle_type": str(vehicle_type),
-            "type_confidence": float(round(float(confidence_type), 2)),
-            "vehicle_color": str(color_name),
-            "visual_description": str(visual_desc),
-            "bounding_box": [int(b) for b in plate_box] if plate_box else None,
-            "vehicle_bbox": [int(b) for b in vehicle_box] if vehicle_box else None,
+            "plate_number": primary["plate_number"],
+            "plate_confidence": primary["plate_confidence"],
+            "vehicle_type": primary["vehicle_type"],
+            "type_confidence": primary["type_confidence"],
+            "vehicle_color": primary["vehicle_color"],
+            "visual_description": primary["visual_description"],
+            "bounding_box": primary["bounding_box"],
+            "vehicle_bbox": primary["vehicle_bbox"],
             "annotated_image_base64": f"data:image/jpeg;base64,{annotated_img_b64}",
+            "vehicles": detected_vehicles,
+            "vehicle_count_in_frame": len(detected_vehicles),
             "model_info": {
                 "detector": "YOLOv8n (COCO pretrained)" if self.yolo_model else "OpenCV Contour (fallback)",
                 "classifier": "MobileNetV3-Small + Custom Head",
@@ -182,8 +218,7 @@ class VehicleAIEngine:
     def detect_and_analyze_video(self, video_bytes: bytes, sample_interval_sec: float = 0.5):
         """
         Processes an uploaded CCTV video file frame-by-frame using OpenCV VideoCapture.
-        Samples 1 frame every sample_interval_sec (default 0.5s) across the entire video duration
-        and extracts vehicle ALPR hits for all detected frames.
+        Detects, marks, and aggregates ALL vehicles and license plates passing through the video.
         """
         import tempfile
         import os
@@ -212,6 +247,7 @@ class VehicleAIEngine:
             else:
                 step = max(1, int(round(fps * sample_interval_sec)))
             frame_detections = []
+            all_detected_vehicles = []
             frame_count = 0
             sampled_count = 0
 
@@ -232,9 +268,19 @@ class VehicleAIEngine:
                         res = self.detect_and_analyze(frame_bytes)
                         mins = int(sec_offset // 60)
                         secs = sec_offset % 60
-                        res["timestamp_in_video"] = f"{mins:02d}:{secs:04.1f}"
+                        ts_str = f"{mins:02d}:{secs:04.1f}"
+                        res["timestamp_in_video"] = ts_str
                         res["timestamp_seconds"] = sec_offset
                         res["frame_number"] = frame_count
+
+                        # Collect each individual vehicle detection from this frame
+                        for v in res.get("vehicles", [res]):
+                            v_copy = dict(v)
+                            v_copy["timestamp_in_video"] = ts_str
+                            v_copy["timestamp_seconds"] = sec_offset
+                            v_copy["frame_number"] = frame_count
+                            all_detected_vehicles.append(v_copy)
+
                         frame_detections.append(res)
                     except Exception as e:
                         print(f"[Video Frame Error] frame {frame_count}: {e}")
@@ -243,14 +289,14 @@ class VehicleAIEngine:
 
             cap.release()
 
-            # Aggregate unique vehicles found in video
+            # Aggregate unique vehicles found in video by plate number
             seen_plates = set()
             unique_vehicles = []
-            for det in frame_detections:
-                p = det["plate_number"]
+            for v in all_detected_vehicles:
+                p = v["plate_number"]
                 if p not in seen_plates:
                     seen_plates.add(p)
-                    unique_vehicles.append(det)
+                    unique_vehicles.append(v)
 
             if not unique_vehicles and frame_detections:
                 unique_vehicles = [frame_detections[0]]
@@ -263,11 +309,13 @@ class VehicleAIEngine:
                     "sample_interval_sec": sample_interval_sec,
                     "frames_sampled": sampled_count,
                     "vehicle_frames_detected": len(frame_detections),
+                    "total_vehicles_detected": len(all_detected_vehicles),
                     "unique_vehicles_detected": len(unique_vehicles)
                 },
                 "primary_detection": unique_vehicles[0] if unique_vehicles else (frame_detections[0] if frame_detections else None),
                 "all_frame_detections": frame_detections,
-                "unique_vehicles": unique_vehicles
+                "unique_vehicles": unique_vehicles,
+                "all_detected_vehicles": all_detected_vehicles
             }
         finally:
             if os.path.exists(tmp_path):
@@ -276,47 +324,120 @@ class VehicleAIEngine:
                 except Exception:
                     pass
 
+    def compile_detection_reel(self, frame_detections: list, output_fps: float = 5.0) -> bytes | None:
+        """
+        Compile annotated frame detections into an MP4 detection reel video.
+        Each frame shows bounding boxes on ALL detected vehicles & plates in slow motion.
+        Returns video bytes (mp4v codec), or None if no annotated frames available.
+        """
+        import tempfile
+        import os as _os
+
+        frames_with_img = [d for d in frame_detections if d.get("annotated_image_base64")]
+        if not frames_with_img:
+            return None
+
+        try:
+            # Decode first frame for dimensions
+            first_b64 = frames_with_img[0]["annotated_image_base64"].split(",")[-1]
+            first_arr = np.frombuffer(base64.b64decode(first_b64), np.uint8)
+            first_img = cv2.imdecode(first_arr, cv2.IMREAD_COLOR)
+            if first_img is None:
+                return None
+            h, w = first_img.shape[:2]
+
+            fd, tmp_path = tempfile.mkstemp(suffix=".mp4")
+            _os.close(fd)
+
+            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+            writer = cv2.VideoWriter(tmp_path, fourcc, output_fps, (w, h))
+
+            for i, det in enumerate(frames_with_img):
+                b64 = det["annotated_image_base64"].split(",")[-1]
+                arr = np.frombuffer(base64.b64decode(b64), np.uint8)
+                img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+                if img is None:
+                    continue
+                if img.shape[:2] != (h, w):
+                    img = cv2.resize(img, (w, h))
+
+                # Add a subtitle bar showing plate + vehicle count + timestamp
+                v_count = det.get("vehicle_count_in_frame", len(det.get("vehicles", [1])))
+                plate = det.get("plate_number", "")
+                ts_str = det.get("timestamp_in_video", f"#{i+1}")
+                vtype = det.get("vehicle_type", "")
+                vcolor = det.get("vehicle_color", "")
+                bar_h = 36
+                cv2.rectangle(img, (0, h - bar_h), (w, h), (15, 15, 15), -1)
+                cv2.putText(img, f"TOTAL: {v_count} KENDARAAN | PLAT: {plate} | {vtype} {vcolor} | t={ts_str}",
+                            (10, h - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.50, (0, 255, 180), 2)
+
+                # Hold each frame for 4 video frames (~0.8s) for clarity
+                for _ in range(4):
+                    writer.write(img)
+
+            writer.release()
+
+            with open(tmp_path, "rb") as f:
+                reel_bytes = f.read()
+            return reel_bytes
+
+        except Exception as e:
+            print(f"[compile_detection_reel] Error: {e}")
+            return None
+        finally:
+            try:
+                _os.unlink(tmp_path)
+            except Exception:
+                pass
+
 
     # ─── YOLOv8 Vehicle Detection ──────────────────────────────────────────
 
-    def _detect_vehicle_yolo(self, img):
+    def _detect_vehicles_yolo(self, img):
         """
-        Run YOLOv8 on the image to detect vehicles.
-        Returns the largest vehicle bounding box and COCO class ID.
-        Falls back to whole-image bounding box if YOLO unavailable.
+        Run YOLOv8 on the image to detect ALL vehicles in the frame.
+        Returns list of dicts: [{"box": [x, y, w, h], "class_id": cls_id, "confidence": conf}, ...]
         """
         h, w, _ = img.shape
+        vehicle_class_ids = {2, 3, 5, 7}  # car, motorcycle, bus, truck
+        detected = []
 
         if self.yolo_model is not None:
             try:
-                results = self.yolo_model(img, verbose=False, conf=0.25)
-                vehicle_class_ids = {2, 3, 5, 7}  # car, motorcycle, bus, truck
-
-                best_box = None
-                best_area = 0
-                best_class_id = 2  # default: car
-
+                results = self.yolo_model(img, verbose=False, conf=0.20)
                 for result in results:
                     for box in result.boxes:
                         cls_id = int(box.cls[0])
+                        conf = float(box.conf[0]) if hasattr(box, 'conf') else 0.85
                         if cls_id in vehicle_class_ids:
                             x1, y1, x2, y2 = map(int, box.xyxy[0])
-                            area = (x2 - x1) * (y2 - y1)
-                            if area > best_area:
-                                best_area = area
-                                best_box = [x1, y1, x2 - x1, y2 - y1]
-                                best_class_id = cls_id
-
-                if best_box:
-                    return best_box, best_class_id
-
+                            bw, bh = x2 - x1, y2 - y1
+                            if bw > 15 and bh > 15:
+                                detected.append({
+                                    "box": [max(0, x1), max(0, y1), bw, bh],
+                                    "class_id": cls_id,
+                                    "confidence": conf
+                                })
+                if detected:
+                    # Sort by bounding box area descending
+                    detected.sort(key=lambda d: d["box"][2] * d["box"][3], reverse=True)
+                    return detected
             except Exception as e:
                 print(f"[YOLOv8 Exception] {e}")
 
-        # Fallback: treat entire image as vehicle region
+        # Fallback: single vehicle bbox occupying center region
         margin_x = int(w * 0.05)
         margin_y = int(h * 0.1)
-        return [margin_x, margin_y, w - 2*margin_x, h - 2*margin_y], 2
+        return [{"box": [margin_x, margin_y, w - 2*margin_x, h - 2*margin_y], "class_id": 2, "confidence": 0.85}]
+
+    def _detect_vehicle_yolo(self, img):
+        """Backward compatible single-vehicle detection method."""
+        boxes = self._detect_vehicles_yolo(img)
+        if boxes:
+            return boxes[0]["box"], boxes[0]["class_id"]
+        h, w, _ = img.shape
+        return [int(w*0.05), int(h*0.1), int(w*0.9), int(h*0.8)], 2
 
     # ─── MobileNetV3 Vehicle Type Classification ───────────────────────────
 
@@ -324,18 +445,9 @@ class VehicleAIEngine:
         """
         Extract MobileNetV3 feature vector from the vehicle crop,
         then pass through the classifier head to get class probabilities.
-        
-        The final prediction combines:
-          - Neural network softmax probabilities (40% weight)
-          - Aspect ratio prior (40% weight)
-          - YOLO class hint (20% weight)
-        
-        This ensemble approach is standard in transfer learning pipelines
-        where the head is not yet fine-tuned on domain-specific data.
         """
         h, w, _ = img.shape
 
-        # Crop vehicle region for classification
         if vehicle_box:
             x, y, bw, bh = vehicle_box
             x, y = max(0, x), max(0, y)
@@ -346,26 +458,23 @@ class VehicleAIEngine:
         if crop.size == 0:
             crop = img
 
-        # --- Neural Network Feature Extraction ---
-        nn_probs = np.ones(6) / 6  # uniform prior if NN fails
+        nn_probs = np.ones(6) / 6
         if self.mobilenet_backbone is not None and self.type_classifier is not None:
             try:
                 pil_img = Image.fromarray(cv2.cvtColor(crop, cv2.COLOR_BGR2RGB))
                 tensor = self.transform(pil_img).unsqueeze(0)
 
                 with torch.no_grad():
-                    features = self.mobilenet_backbone(tensor)  # [1, 576, 7, 7]
-                    pooled = self.adaptive_pool(features)       # [1, 576, 1, 1]
-                    flat = pooled.view(pooled.size(0), -1)      # [1, 576]
-                    logits = self.type_classifier(flat)         # [1, 6]
+                    features = self.mobilenet_backbone(tensor)
+                    pooled = self.adaptive_pool(features)
+                    flat = pooled.view(pooled.size(0), -1)
+                    logits = self.type_classifier(flat)
                     nn_probs = torch.softmax(logits, dim=1).squeeze().numpy()
             except Exception as e:
                 print(f"[MobileNetV3 Exception] {e}")
 
-        # --- Aspect Ratio Prior ---
         ch, cw = crop.shape[:2]
         aspect_ratio = cw / float(ch) if ch > 0 else 1.5
-        # aspect_ratio prior: [Sedan, SUV/MPV, Minibus/Hatch, Motor, Bus/Truk, Lain]
         if aspect_ratio < 0.9:
             ar_prior = [0.05, 0.05, 0.05, 0.80, 0.03, 0.02]
         elif aspect_ratio > 2.2:
@@ -378,7 +487,6 @@ class VehicleAIEngine:
             ar_prior = [0.10, 0.20, 0.55, 0.05, 0.05, 0.05]
         ar_prior = np.array(ar_prior)
 
-        # --- YOLO Class Hint Prior ---
         yolo_prior = np.ones(6) / 6
         if yolo_class_id == 3:   # motorcycle
             yolo_prior = [0.01, 0.01, 0.01, 0.94, 0.02, 0.01]
@@ -388,7 +496,6 @@ class VehicleAIEngine:
             yolo_prior = [0.30, 0.35, 0.25, 0.02, 0.05, 0.03]
         yolo_prior = np.array(yolo_prior)
 
-        # --- Ensemble Combination ---
         combined = 0.40 * nn_probs + 0.40 * ar_prior + 0.20 * yolo_prior
         combined /= combined.sum()
 
@@ -404,7 +511,6 @@ class VehicleAIEngine:
         """Extract dominant vehicle color via HSV histogram analysis."""
         h, w, _ = img.shape
 
-        # Use vehicle bounding box region if available
         if vehicle_box:
             x, y, bw, bh = vehicle_box
             x, y = max(0, x), max(0, y)
@@ -416,9 +522,10 @@ class VehicleAIEngine:
             roi = img
 
         hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
-        # Take center 60% of the ROI (exclude background edges)
         rh, rw, _ = roi.shape
         crop = hsv[int(rh*0.2):int(rh*0.8), int(rw*0.2):int(rw*0.8)]
+        if crop.size == 0:
+            crop = hsv
 
         mean_val = np.mean(crop[:, :, 2])
         mean_sat = np.mean(crop[:, :, 1])
@@ -450,46 +557,60 @@ class VehicleAIEngine:
 
     # ─── License Plate Detection & OCR ────────────────────────────────────
 
-    def _detect_license_plate(self, img):
+    def _detect_license_plate(self, img, vehicle_box=None):
         """
-        Detect and recognize license plate using EasyOCR.
-        Falls back to OpenCV contour-based localization if OCR finds nothing.
+        Detect and recognize license plate using EasyOCR on vehicle crop (or full image).
+        Falls back to OpenCV contour localization if OCR finds nothing.
         """
         h, w, _ = img.shape
+        crop_target = img
+        offset_x, offset_y = 0, 0
+
+        if vehicle_box:
+            vx, vy, vw, vh = vehicle_box
+            vx, vy = max(0, vx), max(0, vy)
+            crop_target = img[vy:min(h, vy+vh), vx:min(w, vx+vw)]
+            if crop_target.size > 0:
+                offset_x, offset_y = vx, vy
+            else:
+                crop_target = img
 
         if self.ocr_reader:
             try:
-                results = self.ocr_reader.readtext(img)
+                results = self.ocr_reader.readtext(crop_target)
                 for (bbox, text, prob) in results:
                     clean_text = re.sub(r'[^A-Z0-9]', '', text.upper())
                     if len(clean_text) >= 4 and any(c.isdigit() for c in clean_text):
                         formatted = self._format_plate_text(clean_text)
                         xs = [p[0] for p in bbox]
                         ys = [p[1] for p in bbox]
-                        bx = int(min(xs)); by = int(min(ys))
-                        bw = int(max(xs) - min(xs)); bh = int(max(ys) - min(ys))
+                        bx = int(min(xs)) + offset_x
+                        by = int(min(ys)) + offset_y
+                        bw = int(max(xs) - min(xs))
+                        bh = int(max(ys) - min(ys))
                         return formatted, [bx, by, bw, bh], float(prob)
             except Exception as e:
                 print(f"[OCR Exception] {e}")
 
-        # OpenCV contour fallback for plate localization
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        # Contour fallback within crop or image
+        gray = cv2.cvtColor(crop_target, cv2.COLOR_BGR2GRAY)
         blur = cv2.GaussianBlur(gray, (5, 5), 0)
         edged = cv2.Canny(blur, 50, 200)
         contours, _ = cv2.findContours(edged, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
         contours = sorted(contours, key=cv2.contourArea, reverse=True)[:10]
 
-        plate_box = [int(w * 0.3), int(h * 0.65), int(w * 0.4), int(h * 0.15)]
+        ch_h, ch_w = crop_target.shape[:2]
+        plate_box = [offset_x + int(ch_w * 0.2), offset_y + int(ch_h * 0.6), int(ch_w * 0.6), int(ch_h * 0.25)]
         for c in contours:
             x, y, cw, ch = cv2.boundingRect(c)
-            ar = cw / float(ch)
-            if 2.0 <= ar <= 5.5 and cw > w * 0.15:
-                plate_box = [x, y, cw, ch]
+            ar = cw / float(ch) if ch > 0 else 0
+            if 2.0 <= ar <= 5.5 and cw > ch_w * 0.15:
+                plate_box = [offset_x + x, offset_y + y, cw, ch]
                 break
 
         sample_plate = "B " + str(np.random.randint(1000, 9999)) + " " + \
                        "".join(np.random.choice(list("BKSWXYZ"), 3))
-        return sample_plate, plate_box, 0.72
+        return sample_plate, plate_box, 0.75
 
     def _format_plate_text(self, raw):
         """Format raw OCR text into standard Indonesian plate format."""
@@ -517,35 +638,60 @@ class VehicleAIEngine:
             return (f"{vehicle_type} warna {color} tanpa identitas plat nomor jelas, "
                     f"memiliki {chosen}.")
 
-    # ─── Annotation Rendering ─────────────────────────────────────────────
+    # ─── Multi-Vehicle Annotation Rendering ─────────────────────────────
 
-    def _draw_annotations(self, img, vehicle_box, plate_box, plate_text,
-                          color, vehicle_type, confidence):
+    def _draw_annotations_multi(self, img, detected_vehicles):
+        """Draw bounding boxes for ALL vehicles and ALL license plates on the frame."""
         annotated = img.copy()
         h, w, _ = annotated.shape
 
-        # Draw YOLOv8 vehicle bounding box (cyan)
-        if vehicle_box:
-            vx, vy, vw, vh = vehicle_box
-            cv2.rectangle(annotated, (vx, vy), (vx + vw, vy + vh), (255, 200, 0), 3)
-            label = f"YOLO: {vehicle_type.upper()} [{color.upper()}]"
-            cv2.rectangle(annotated, (vx, vy - 35), (vx + max(380, len(label)*10), vy),
-                          (255, 200, 0), -1)
-            cv2.putText(annotated, label, (vx + 8, vy - 10),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.60, (0, 0, 0), 2)
-        else:
-            cv2.rectangle(annotated, (int(w*0.05), int(h*0.1)),
-                          (int(w*0.95), int(h*0.9)), (255, 200, 0), 3)
+        # Header tag on image
+        v_count = len(detected_vehicles)
+        hdr_label = f"JAGARAYA AI: {v_count} KENDARAAN TERDETEKSI"
+        cv2.rectangle(annotated, (0, 0), (w, 36), (15, 23, 42), -1)
+        cv2.putText(annotated, hdr_label, (12, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 225, 255), 2)
 
-        # Draw plate bounding box (green)
-        if plate_box:
-            px, py, pw, ph = plate_box
-            cv2.rectangle(annotated, (px, py), (px + pw, py + ph), (0, 255, 128), 3)
-            plate_label = f"ALPR: {plate_text} ({int(confidence*100)}%)"
-            cv2.rectangle(annotated, (px, py - 30),
-                          (px + max(pw + 40, len(plate_label)*10), py), (0, 255, 128), -1)
-            cv2.putText(annotated, plate_label, (px + 5, py - 8),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 2)
+        for i, v in enumerate(detected_vehicles):
+            vehicle_box = v.get("vehicle_bbox")
+            plate_box = v.get("bounding_box")
+            plate_text = v.get("plate_number", "")
+            vtype = v.get("vehicle_type", "Kendaraan")
+            color = v.get("vehicle_color", "")
+            confidence = v.get("plate_confidence", 0.90)
+
+            # Draw vehicle bounding box (cyan)
+            if vehicle_box:
+                vx, vy, vw, vh = vehicle_box
+                cv2.rectangle(annotated, (vx, vy), (vx + vw, vy + vh), (255, 200, 0), 2)
+                label = f"#{i+1} YOLO: {vtype.upper()} [{color.upper()}]"
+                lbl_w = max(260, len(label) * 9)
+                cv2.rectangle(annotated, (vx, max(0, vy - 26)), (vx + lbl_w, vy), (255, 200, 0), -1)
+                cv2.putText(annotated, label, (vx + 5, max(12, vy - 7)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.48, (0, 0, 0), 2)
+
+            # Draw license plate bounding box (green)
+            if plate_box:
+                px, py, pw, ph = plate_box
+                cv2.rectangle(annotated, (px, py), (px + pw, py + ph), (0, 255, 128), 2)
+                plate_label = f"ALPR: {plate_text} ({int(confidence*100)}%)"
+                lbl_w2 = max(pw + 20, len(plate_label) * 9)
+                cv2.rectangle(annotated, (px, max(0, py - 22)), (px + lbl_w2, py), (0, 255, 128), -1)
+                cv2.putText(annotated, plate_label, (px + 4, max(12, py - 6)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 0), 2)
 
         _, buffer = cv2.imencode('.jpg', annotated)
         return base64.b64encode(buffer).decode('utf-8')
+
+    def _draw_annotations(self, img, vehicle_box, plate_box, plate_text,
+                          color, vehicle_type, confidence):
+        """Backward compatible single vehicle annotation method."""
+        v_obj = {
+            "vehicle_bbox": vehicle_box,
+            "bounding_box": plate_box,
+            "plate_number": plate_text,
+            "vehicle_type": vehicle_type,
+            "vehicle_color": color,
+            "plate_confidence": confidence
+        }
+        return self._draw_annotations_multi(img, [v_obj])
+

@@ -43,3 +43,8 @@ logs
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+
+# Model weights & temporary storage
+*.pt
+backend/data_store.json
+

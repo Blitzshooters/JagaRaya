@@ -109,6 +109,17 @@ def sanitize_json_obj(obj, visited=None):
     else:
         return str(obj)
 
+from fastapi import Response
+import uuid
+
+REEL_CACHE = {}
+
+@app.get("/api/reels/{reel_id}")
+def get_detection_reel(reel_id: str):
+    if reel_id not in REEL_CACHE:
+        raise HTTPException(status_code=404, detail="Reel video not found or expired.")
+    return Response(content=REEL_CACHE[reel_id], media_type="video/mp4")
+
 @app.post("/api/detect")
 async def detect_vehicle(
     file: UploadFile = File(...),
@@ -149,6 +160,14 @@ async def detect_vehicle(
                 })
                 saved_ids.append(cap["id"])
             
+            # Compile annotated reel video
+            reel_bytes = ai_engine.compile_detection_reel(video_result["all_frame_detections"])
+            reel_id = str(uuid.uuid4())
+            reel_url = None
+            if reel_bytes:
+                REEL_CACHE[reel_id] = reel_bytes
+                reel_url = f"http://127.0.0.1:8000/api/reels/{reel_id}"
+
             if primary:
                 clean_vehicles = []
                 for v in video_result["unique_vehicles"]:
@@ -160,11 +179,18 @@ async def detect_vehicle(
                     f_clean = {k: val for k, val in f_det.items() if k not in ("all_unique_vehicles", "video_meta")}
                     clean_all_frames.append(f_clean)
 
+                clean_all_detected_vehicles = []
+                for v_det in video_result.get("all_detected_vehicles", []):
+                    v_det_clean = {k: val for k, val in v_det.items() if k not in ("all_unique_vehicles", "video_meta")}
+                    clean_all_detected_vehicles.append(v_det_clean)
+
                 response_data = {k: val for k, val in primary.items() if k not in ("all_unique_vehicles", "video_meta")}
                 response_data["saved_capture_id"] = saved_ids[0] if saved_ids else None
                 response_data["video_meta"] = video_result["video_summary"]
                 response_data["all_unique_vehicles"] = clean_vehicles
                 response_data["all_frame_detections"] = clean_all_frames
+                response_data["all_detected_vehicles"] = clean_all_detected_vehicles
+                response_data["detection_reel_url"] = reel_url
                 return sanitize_json_obj(response_data)
             else:
                 raise HTTPException(status_code=400, detail="Tidak ada kendaraan terdeteksi dalam video.")
@@ -191,6 +217,7 @@ async def detect_vehicle(
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"AI Detection failed: {str(e)}")
+
 
 
 @app.get("/api/track")
